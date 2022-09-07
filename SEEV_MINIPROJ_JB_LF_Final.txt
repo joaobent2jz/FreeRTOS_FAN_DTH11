@@ -7,8 +7,8 @@
 //LEAU- Licenciatura em Engenharia Automóvel
 //SEEV - Sistemas Elétricos e Eletrónicos de Veículos
 
-/*TP1: Pretende-se  neste  trabalho  prático  a  implementação  de um  Sistema de Medição de Temperatura de um Motor de Combustão
- * Interna, utilizando um sistema operativo de tempo real FreeRTOS.*/
+/*TP1: Pretende-se  neste  trabalho  prático  a  implementação  de um  Sistema de Medição de Temperatura de um sistema de refrigeração
+ * , utilizando um sistema operativo de tempo real FreeRTOS.*/
 
 /*-LIBRARIES-----------------------------------------------------------------------------------------------------------------------*/
 #include "Arduino.h"
