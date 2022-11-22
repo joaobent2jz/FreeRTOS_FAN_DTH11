@@ -6,13 +6,12 @@
 //ESTG - Escola Superior de Tecnologia e Gestão
 //LEAU- Licenciatura em Engenharia Automóvel
 //SEEV - Sistemas Elétricos e Eletrónicos de Veículos
+ 
+/*TP1: Pretende-se  neste  trabalho  prático  a  implementação  de um  Sistema de Medição de um sistema de refrigeração
+* , utilizando um sistema operativo de tempo real FreeRTOS.*/
 
-/*TP1: Pretende-se  neste  trabalho  prático  a  implementação  de um  Sistema de Medição de Temperatura de um sistema de refrigeração
- * , utilizando um sistema operativo de tempo real FreeRTOS.*/
-
-/*-LIBRARIES-----------------------------------------------------------------------------------------------------------------------*/
+/*Inclusão das Bibliotecas utilizadas*/
 #include "Arduino.h"
-//Sensor Temperatura e LCD
 #include <SPI.h>
 #include <WiFi.h>
 #include <Wire.h>
@@ -20,7 +19,6 @@
 #include <Adafruit_SSD1306.h>
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
-//INTERRUPT
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -28,336 +26,367 @@
 #include "nvs_flash.h"
 #include "esp_task_wdt.h"
 
+/*Definição de zonas de debugging*/
+#define DEBUG_PRINT_ALL
+#define DEBUG_PRINT_1
 
-/*-DEFINES------------------------------------------------------------------------------------------------------------------------*/
-
-//LCD
+//Definição de constantes associadas aos pinos de ligação de cada um dos componentes utilizados
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
-//Sensor Temperatura - DHT11
 #define DHTPIN 33        // Digital pin connected to the DHT sensor
 #define DHTTYPE    DHT11 // Sensor DHT 11
-//LED
-#define LED_PIN_Red 5		 //PIN 5 - Led VERMELHO
-//ADC
-#define THERMISOR_PIN 33 //PIN 33 - Sensor Analógico de Temperatura
+#define LED_PIN_Red 4		 //PIN 4 - Led VERMELHO
+
+//Definição do pino e das constantes associadas ao conversor digital-analógico
+#define THERMISOR_PIN 32 //PIN 32 - Sensor Analógico de Temperatura
+#define ADC_1_4 32
+#define ADC_RESOLUTION 10
+#define VREF_PLUS  3.3
+#define VREF_MINUS  0.0
+
+#define MAX_TEMP 75
+#define MED_TEMP 60
 
 //INTERRUPT PIN
-const uint8_t interruptPin = 32; //PIN 32 para butão de interrupção
+const uint8_t interruptPin = 27; //PIN 27 para butão de interrupção
 
-
-/*-FUNCTIONS---------------------------------------------------------------------------------------------------------------------*/
-
-// Declaration for an SSD1306 display connected to I2C (SDA, SCL pins)
-Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-
-/*-TASK FUNCTIONS----------------------------------------------------------------------------------------------------------------*/
-
-void vTaskBrain(void*pvParameters);      //Função Tarefa Brain
-void vTask_T_LCD (void*pvParameters);  //Função Tarefa que lê temperatura e mostra no LCD
-void vTaskFAN (void*pvParameters);	  //Função Tarefa aciona o Buzzer
-void vTaskLED (void*pvParameters);	      //Função Tarefa que controla os LED
-void vTaskADC (void*pvParameters);	      //Função Tarefa Sensor Temp. Analógico
+/*-TASK FUNCTIONS-*/
+void vTaskBrain(void *pvParameters);      //Função Tarefa Brain
+void vTask_Temp(void *pvParameters); //Função Tarefa que lê temperatura e mostra no LCD
+void vTask_LCD(void *pvParameters);
+void vTaskFAN(void *pvParameters);	  //Função Tarefa aciona o Buzzer
+void vTaskLED(void *pvParameters);	      //Função Tarefa que controla os LED
+void vTaskADC(void *pvParameters);	      //Função Tarefa Sensor Temp. Analógico
 
 TaskHandle_t xHandleLED;
 TaskHandle_t xHandleADC;
 
-static void vHandlerTask( void *pvParameters );
-
-/*-INTERRUPTS--------------------------------------------------------------------------------------------------------------------*/
-
-//static void vInterruptHandler( void );
+/*-INTERRUPTS-*/
+static void vHandlerTask(void *pvParameters);
 void IRAM_ATTR vInterruptHandler();
 
-/*-SEMAPHORES--------------------------------------------------------------------------------------------------------------------*/
-
+/*-SEMAPHORES-*/
 SemaphoreHandle_t xBinarySemaphore;
 
-/*-QUEUES------------------------------------------------------------------------------------------------------------------------*/
+/*-QUEUES-*/
+QueueHandle_t xQueueTemp, xQueueTempBRAIN, xQueueInterruptBRAIN, xQueueLCD, xQueueADC;
 
-QueueHandle_t xQueueTemp, xQueueTempBRAIN, xQueueInterruptBRAIN;
-
-/*-MUTEX-------------------------------------------------------------------------------------------------------------------------*/
+/*-MUTEX-*/
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
-
 SemaphoreHandle_t xMutex;
 
-
-/*-VOID SETUP--------------------------------------------------------------------------------------------------------------------*/
-void setup()
-{
+void setup() {
 	Serial.begin(115200);
-
 	//Criar QUEUE's
 	xQueueTempBRAIN = xQueueCreate(1, sizeof(float));
 	xQueueTemp = xQueueCreate(1, sizeof(float));
+	xQueueLCD = xQueueCreate(1, sizeof(float));
+	xQueueADC = xQueueCreate(1, sizeof(float));
 	xQueueInterruptBRAIN = xQueueCreate(1, sizeof(float));
-
 	//Criar Semáforo Binário
-	vSemaphoreCreateBinary( xBinarySemaphore );
+	vSemaphoreCreateBinary(xBinarySemaphore);
 	xMutex = xSemaphoreCreateMutex();
-
-	//Criar Tarefa Brain
-	xTaskCreatePinnedToCore( vTaskBRAIN, "Brain", 10000, NULL, 3, NULL, 1);
-
-	//Criar Tarefa p/ Mostrar Temperatura no LCD
-	xTaskCreatePinnedToCore( vTask_T_LCD, "TempinLCD", 10000, NULL, 4, NULL, 0);
-
-
-	xTaskCreatePinnedToCore( vTaskLED, "LED", 10000, NULL, 1, &xHandleLED, 1);
-
-	//Criar Tarefa p/ ADC
-	xTaskCreatePinnedToCore( vTaskADC, "ADC", 10000, NULL, 1, &xHandleADC, 1);
-
-
-
+    //Criação tarefas
+	xTaskCreatePinnedToCore(vTaskBRAIN, "Brain", 1024, NULL, 4, NULL, 1);
+	xTaskCreatePinnedToCore(vTask_Temp, "Temp", 1024, NULL, 2, NULL, 0);
+	xTaskCreatePinnedToCore(vTask_LCD, "LCD", 4096, NULL, 3, NULL, 1);
+	xTaskCreatePinnedToCore(vTaskLED, "LED", 1024, NULL, 1, &xHandleLED, 1);
+	xTaskCreatePinnedToCore(vTaskADC, "ADC", 1024, NULL, 1, &xHandleADC, 1);
 	pinMode(interruptPin, INPUT_PULLUP); //Definir PIN da interrupção com pullup interna
-	attachInterrupt(digitalPinToInterrupt(interruptPin), vInterruptHandler, FALLING);
-	interrupts();
+	attachInterrupt(digitalPinToInterrupt(interruptPin), vInterruptHandler,
+			FALLING);
 
-	/* Check the semaphore was created successfully. */
-	if( xBinarySemaphore != NULL ){
-
-		xTaskCreatePinnedToCore( vHandlerTask, "Handler", 1000, NULL, 3, NULL, 0); //Criar HandlerTask no Core
+	if (xBinarySemaphore != NULL) {
+		xTaskCreatePinnedToCore(vHandlerTask, "Handler", 1000, NULL, 5, NULL,
+				0); //Criar HandlerTask no Core
 	}
 }
 
-/*-VOID vTASK------------------------------------------------------------------------------------------------------------------*/
-
-void vTaskBRAIN (void*pvParameters){ //Inicio da Tarefa Brain
-	TickType_t xLastWakeTime;               //Variavel para determinar nº de ticks
+void vTaskBRAIN(void *pvParameters) { //Inicio da Tarefa Brain
+	TickType_t xLastWakeTime;             //Variavel para determinar nº de ticks
 	xLastWakeTime = xTaskGetTickCount();
-	float temperature, TempBrain;
-	int Emergencia;
+	static signed portBASE_TYPE xHigherPriorityTaskWoken;
 
-	for(;;){
+	float temperature, TempBrain, tempANALOG;
+	int Emergencia;
+	int ledChannel_Red = 5;
+	int resolution = 8;
+	int dutyCycle_Red = 100;
+
+	for (;;) {
 		xQueueReceive(xQueueTemp, &temperature, 0); //Receber Temperatura do DHT11
 		xQueueReceive(xQueueInterruptBRAIN, &Emergencia, 0); //Receber estado do botão de emergencia
-		TempBrain = (temperature * 7.66666666)-100;  //Converter Temperatura Ambiente em Temp. aproximada do Motor
 
-		if(TempBrain>=90){
-			//Criar Tarefa p/ Fan
-			xTaskCreatePinnedToCore( vTaskFAN, "Fan", 10000, NULL, 1, NULL, 0);//Criar tarefa Buzzer no Core 0 apenas
-			//com temp>90
-		}
-
+#ifdef DEBUG_PRINT_ALL
 		Serial.print("Emergencia:"); //Verificar estado do botão em porta série
 		Serial.println(Emergencia);
-		if (Emergencia == 1 && TempBrain > 90) { //Ativar Emergência apenas quando a TempBrain>115
-			//Criar Tarefa p/ Fan
-			xTaskCreatePinnedToCore( vTaskFAN, "FAN", 10000, NULL, 1, NULL, 0);//Criar tarefa Buzzer no Core 0 apenas
-			//com temp>90
-			int ledChannel_Red = 5;
-			int resolution = 8;
-			int dutyCycle_Red = 100;
-			//Led Red
-			ledcWrite(ledChannel_Red, dutyCycle_Red); //Acender Led Vermelho com dutycycle = 100
+#endif
 
+		TempBrain = (temperature * 7.66666666) - 100; //Converter Temperatura Ambiente em Temp. aproximada do Motor
+#ifdef DEBUG_PRINT_ALL
+		Serial.print(F("Temperature: "));
+		Serial.println(TempBrain);
+#endif
+
+		if (TempBrain >= MED_TEMP) {
+			xTaskCreatePinnedToCore(vTaskFAN, "Fan", 1024, NULL, 1, NULL, 0); //Criar tarefa Buzzer no Core 0 apenas
 		}
+#ifdef DEBUG_PRINT_ALL
+		Serial.print("Emergencia:"); //Verificar estado do botão em porta série
+		Serial.println(Emergencia);
+#endif
 
-
-
-		xQueueSendToBack(xQueueTempBRAIN, &TempBrain, 0); //Enviar Temp. aproximada do Motor
-
-		vTaskDelayUntil( &xLastWakeTime, ( 250 / portTICK_PERIOD_MS ) ); //Tarefa ocorre durante 250ms
+		xQueueOverwrite(xQueueTempBRAIN, &TempBrain); //Enviar Temp. aproximada do Motor
+#ifdef DEBUG_PRINT_ALL
+		Serial.println(F("BRAIN's: OK"));
+#endif
+		vTaskDelayUntil(&xLastWakeTime, (250 / portTICK_PERIOD_MS)); //Tarefa ocorre durante 250ms
 	}
 }                                           //Fim da Tarefa Brain
 
-static void vHandlerTask( void *pvParameters ){  //Inicio Handler Task
+static void vHandlerTask(void *pvParameters) {  //Inicio Handler Task
 	int Emergencia = 0;
-	xSemaphoreTake( xBinarySemaphore, 0);        //Dar sinal verde à tarefa
+	float TempBrain;
 
-	for( ;; )
-	{
-		xSemaphoreTake( xBinarySemaphore, portMAX_DELAY ); //Dar sinal verde à tarefa
-		if(Emergencia == 0){                       //Alterar estado do botão
+	static signed portBASE_TYPE xHigherPriorityTaskWoken;
+	for (;;) {
+		xQueuePeek(xQueueTempBRAIN, &TempBrain, 0); //Receber valor de TempBRAIN
+
+		if (TempBrain >= MAX_TEMP) { //Alterar estado do botão
 			Emergencia = 1;
-		}
-		else
+#ifdef DEBUG_PRINT_1
+			Serial.print("Emergencia:"); //Verificar estado do botão em porta série
+			Serial.println(Emergencia);
+#endif
+		} else
 			Emergencia = 0;
 
-		vTaskDelay(200 / portTICK_PERIOD_MS);            //Tarefa ocorre durante 200ms
-		xSemaphoreTake( xBinarySemaphore, portMAX_DELAY );//Redundancia
-		xQueueSendToBack(xQueueInterruptBRAIN, &Emergencia, 0);  //Enviar estado do botão para a brain
+#ifdef DEBUG_PRINT_ALL
+		Serial.println(F("HandlerTask's: OK"));
+#endif
+		xQueueSendToBack(xQueueInterruptBRAIN, &Emergencia, 0); //Enviar estado do botão para a brain
+		vTaskDelay(10 / portTICK_PERIOD_MS);
 	}
 }                                          //Fim da Handler Task
 
-void vInterruptHandler(){                                //Inicio Interrupção
+void vInterruptHandler() {                                //Inicio Interrupção
 	static signed portBASE_TYPE xHigherPriorityTaskWoken;
+	int Emergencia = 0;
 
-	/* 'Give' o semáforo para desbloquear a Task */
+	vTaskSuspendAll(); //Suspende o sistema enquanto o botão associado à interrupção está a ser premido
+
+#ifdef DEBUG_PRINT_1
 	Serial.println("Interrupcao gerada");
-	xSemaphoreGiveFromISR( xBinarySemaphore, (signed portBASE_TYPE*)&xHigherPriorityTaskWoken );
-
+#endif
 }                                         //Fim Interrupção
 
-
-void vTask_T_LCD (void*pvParameters){    //Inicio Tarefa TempInLCD
-	TickType_t xLastWakeTime;               //Variavel para determinar nº de ticks
+void vTask_LCD(void *pvParameters) {
+	TickType_t xLastWakeTime;             //Variavel para determinar nº de ticks
 	xLastWakeTime = xTaskGetTickCount();
-	float oldtemp=0;
+	Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+	float TempBrain, tempANALOG;
 
-	//Função Sensor Temperatura
-	DHT dht(DHTPIN, DHTTYPE);                //Definir Sensor de Temperatura
+	xSemaphoreTake(xMutex, 0);  //Mutex para proteger comunicação I2C
 
-	dht.begin();
-
-	xSemaphoreTake(xMutex, portMAX_DELAY);  //Mutex para proteger comunicação I2C
-
-	if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {        //Detetar se está a ocorrer comunicação
+	if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { //Detetar se está a ocorrer comunicação
+#ifdef DEBUG_PRINT_ALL
 		Serial.println(F("SSD1306 allocation failed"));
-		for(;;);
+#endif
 	}
-	vTaskDelay(1000 / portTICK_PERIOD_MS);       //Ocupar processador durante 1000ms
 	display.clearDisplay();                      //Limpar Display
-	display.setTextColor(WHITE);				//Selecionar cor do texto
+	display.setTextColor(WHITE, BLACK);				//Selecionar cor do texto
+	display.setRotation(0);
+	display.setTextSize(2);				//Selecionar tamanho do texto
+	display.setCursor(0, 0);	//Selecionar onde imprime o texto no display
+	display.print("Mot. Temp.");
 
-	for(;;){
-		vTaskDelay(2500 / portTICK_PERIOD_MS);  //Ocupar processador durante 2500ms
+	display.setTextSize(2);				//Selecionar tamanho do texto
+	display.setCursor(0, 35);	//Selecionar onde imprime o texto no display
+	display.print("ADC Temp.");
 
-		//Ler Temperatura
-		float temp = dht.readTemperature();     //Receber e ler temperatura do sensor DHT11
+	xSemaphoreGive(xMutex);
 
+	for (;;) {
 
-		//Erro na leitura da temperatura
-		if (isnan(temp)) {
-			Serial.println("Failed to read from DHT sensor!");
-			temp=oldtemp;
-		}
-		else{
-			oldtemp = temp;
-		}
+		xQueuePeek(xQueueTempBRAIN, &TempBrain, 0); //Receber valor de TempBRAIN
+		xSemaphoreTake(xMutex, portMAX_DELAY);
 
-		// clear display
-		display.clearDisplay();
-		//Lê Temperatura corretamente
-		// display temperature
-		display.setTextSize(1);						//Selecionar tamanho do texto
-		display.setCursor(0,0);						//Selecionar onde imprime o texto no display
-		display.print("Temperature: ");
-		display.setTextSize(2.5);					//Selecionar tamanho do texto
-		display.setCursor(0,10);					//Selecionar onde imprime o texto no display
-		display.print((temp * 7.66666666)-100);		//Mostrar Temperatura no display
+		display.setTextSize(1.75);				//Selecionar tamanho do texto
+		display.setCursor(0, 18);	//Selecionar onde imprime o texto no display
+		display.print(TempBrain);	//Mostrar Temperatura no display
 		display.print(" ");
 		display.setTextSize(1);
 		display.cp437(true);                       //Desenhar "º" no display
 		display.write(167);
-		display.setTextSize(2);
+		display.setTextSize(1.75);
+		display.print("C");
+		if (TempBrain > MAX_TEMP) {
+			display.setTextSize(1.75);             //Selecionar tamanho do texto
+			display.setCursor(70, 18); //Selecionar onde imprime o texto no display
+			display.print("PERIGO");
+		}
+
+#ifdef DEBUG_PRINT_ALL
+		Serial.println(F("LCD's: OK"));
+#endif
+#ifdef DEBUG_PRINT_ALL
+		Serial.println(TempBrain);
+#endif
+
+		xQueueReceive(xQueueADC, &tempANALOG, 0);
+
+		display.setTextSize(1.75);				//Selecionar tamanho do texto
+		display.setCursor(0, 50);	//Selecionar onde imprime o texto no display
+		display.print(tempANALOG);	//Mostrar Temperatura no display
+		display.print(" ");
+		display.setTextSize(1);
+		display.cp437(true);                       //Desenhar "º" no display
+		display.write(167);
+		display.setTextSize(1.5);
 		display.print("C");
 
-		if( (temp * 7.66666666)-100 > 90){
-			display.setTextSize(3);                 //Selecionar tamanho do texto
-			display.setCursor(0,45);                //Selecionar onde imprime o texto no display
-			display.print("WARNING");
-		}
+		display.display();
 		xSemaphoreGive(xMutex);                   //Mutex
+#ifdef DEBUG_PRINT_ALL
+		Serial.println(tempANALOG);
+#endif
+		vTaskDelayUntil(&xLastWakeTime, (150 / portTICK_PERIOD_MS)); //Tarefa ocorre durante 250ms
+	}
+}
+void vTask_Temp(void *pvParameters) {    //Inicio Tarefa TempInLCD
+	TickType_t xLastWakeTime;             //Variavel para determinar nº de ticks
+	xLastWakeTime = xTaskGetTickCount();
+	float oldtemp = 0;
+	DHT dht(DHTPIN, DHTTYPE);                //Definir Sensor de Temperatura
 
-		xQueueSendToBack(xQueueTemp, &temp, 0);   //Enviar valor temp para a Brain
+	dht.begin();
 
-		//Testar Tarefa
+	for (;;) {
+		float temp = dht.readTemperature(); //Receber e ler temperatura do sensor DHT11
+		if (isnan(temp)) {
+#ifdef DEBUG_PRINT_ALL
+			Serial.println("Failed to read from DHT sensor!");
+#endif
+			temp = oldtemp;
+		} else {
+			oldtemp = temp;
+		}
+		xQueueSendToBack(xQueueTemp, &temp, 0); //Enviar valor temp para a Brain
+
+#ifdef DEBUG_PRINT_ALL
 		Serial.print(F("Temperature: "));
 		Serial.println(temp);
 		Serial.println(F("Temperature: OK"));
+#endif
 
-		display.display();
-		vTaskDelayUntil( &xLastWakeTime, ( 250 / portTICK_PERIOD_MS ) ); //Tarefa ocorre durante 250ms
-
+		vTaskDelayUntil(&xLastWakeTime, (150 / portTICK_PERIOD_MS)); //Tarefa ocorre durante 250ms
 	}
 }                                              //Inicio Tarefa TempInLCD
 
-void vTaskFAN (void*pvParameters){       //Inicio Tarefa BUZER
-	//Porta Definida para o Buzzer c/ ESP32
-		int INA = 35; //for ESP32
-		int INB = 13; //for ESP32
+void vTaskFAN(void *pvParameters) {       //Inicio Tarefa BUZER
+	int INA = 14; //for ESP32
+	int INB = 13; //for ESP32
+	float TempBrain;
+	pinMode(INA, OUTPUT);               //Definir pin do Fan
+	pinMode(INB, OUTPUT);               //Definir pin do Fan
 
-		pinMode (INA, OUTPUT);               //Definir pin do Fan
-		pinMode (INB, OUTPUT);               //Definir pin do Fan
+	for (;;) {
 
-		for(;;){
-			digitalWrite (INA, HIGH); //turn Fan on
-			digitalWrite (INB, LOW); //turn Fan on
-			vTaskDelay(100 / portTICK_PERIOD_MS);
-			digitalWrite (INA, LOW);  //turn Fan off
-			digitalWrite (INB, LOW);  //turn Fan off
+		digitalWrite(INA, HIGH); //turn Fan on
+		digitalWrite(INB, LOW); //turn Fan on
+		vTaskDelay(1000 / portTICK_PERIOD_MS);
+#ifdef DEBUG_PRINT_1
+		Serial.println(F("FAN: ON"));
+#endif
+		digitalWrite(INA, LOW);  //turn Fan off
+		digitalWrite(INB, LOW);  //turn Fan off
+		vTaskDelay(100 / portTICK_PERIOD_MS);
 
-			vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-			//Testar Tarefa
+#ifdef DEBUG_PRINT_1
+		Serial.println(F("FAN: OFF"));
+#endif
+#ifdef DEBUG_PRINT_ALL
 			Serial.println(F("FAN: OK"));
-			vTaskDelete(NULL);                //Eliminar tarefa Fan
-		}
+#endif
+		vTaskDelete(NULL);                //Eliminar tarefa Fan
+	}
 }										//FIM Tarefa FAN
 
-
-
-void vTaskLED (void*pvParameters){   //Inicio Tarefa LED
+void vTaskLED(void *pvParameters) {   //Inicio Tarefa LED
 	TickType_t xLastWakeTime;
 	xLastWakeTime = xTaskGetTickCount();
 	float TempBrain;
-
 	int freq = 100000;               //Frequencia LED
 	int ledChannel_Red = 5;            //PIN LED Vermelho
-	int resolution = 8;
-
+	int resolution = 10;
+	static volatile int dutyCycle_Red =0;
 
 	ledcSetup(ledChannel_Red, freq, resolution);
 	ledcAttachPin(LED_PIN_Red, ledChannel_Red);
 
-	for(;;){
-
-		xQueueReceive(xQueueTempBRAIN, &TempBrain, 0);    //Receber valor de TempBRAIN
-		if( 90 <= TempBrain){
-			//LED RED
-			for (int dutyCycle_Red = 50; dutyCycle_Red <= pow(2,resolution); dutyCycle_Red++) {  //Piscar LED Vermelho
+	for (;;) {
+		xQueuePeek(xQueueTempBRAIN, &TempBrain, 0); //Receber valor de TempBRAIN
+		if (TempBrain >= MAX_TEMP) {
+#ifdef DEBUG_PRINT_1
+			Serial.println(F("LED's TempBrain:"));
+			Serial.println(TempBrain);
+#endif
+			for (dutyCycle_Red = 0; dutyCycle_Red <= pow(2, resolution);
+					dutyCycle_Red++) {  //Piscar LED Vermelho
 				ledcWrite(ledChannel_Red, dutyCycle_Red);
-				vTaskDelay((1024/pow(2,resolution)) / portTICK_PERIOD_MS );
+#ifdef DEBUG_PRINT_ALL
+				Serial.print(F("LED's dutyCycle_Red:"));
+				Serial.println(dutyCycle_Red);
+				Serial.flush();
+#endif
+				vTaskDelay(1 / portTICK_PERIOD_MS);
 			}
-
-			for (int dutyCycle_Red = pow(2,resolution); dutyCycle_Red >= 0; dutyCycle_Red--) {
+			for (dutyCycle_Red = pow(2, resolution); dutyCycle_Red >= 0;
+					dutyCycle_Red--) {
 				ledcWrite(ledChannel_Red, dutyCycle_Red);
-				vTaskDelay((1024/pow(2,resolution)) / portTICK_PERIOD_MS );
+				vTaskDelay(1 / portTICK_PERIOD_MS);
 			}
 		}
-		//Testar Tarefa
+#ifdef DEBUG_PRINT_ALL
 		Serial.println(F("LED's: OK"));
-		vTaskDelayUntil( &xLastWakeTime, ( 150 / portTICK_PERIOD_MS ) ); //Tarefa ocorre durante 150ms
+#endif
 	}
+} //Fim Tarefa LED
 
-}                                //Fim Tarefa LED
-
-void vTaskADC (void*pvParameters){          //Inicio Tarefa Sensor Analógico
+void vTaskADC(void *pvParameters) {          //Inicio Tarefa Sensor Analógico
+	char *pcTaskName;
 	TickType_t xLastWakeTime;
+	int analog_value = 0;
+	float analog_voltage = 0;
+	float temp_LM35 = 0;
+	;
+
+	analogReadResolution(ADC_RESOLUTION);
+	pcTaskName = (char*) pvParameters;
 	xLastWakeTime = xTaskGetTickCount();
-	uint16_t Vo;
-	float R1 = 10000;
-	float logR2, R2, T, Tc, Tf;
-	float c1 = 1.009249522e-03, c2 = 2.378405444e-04, c3 = 2.019202697e-07;
-
-	for(;;){
-		Vo = analogRead(THERMISOR_PIN);                  //Equação de Conversão Analog-Digital
-		R2 = R1 * (1023.0 / (float)Vo - 1.97640000032);
-		logR2 = log(R2);
-		T = (1.0 / (c1 + c2 * logR2 + c3 * logR2 * logR2 * logR2)); // temperature in Kelvin
-		Tc = T - 273.15; // Temperature in Celsius
-		Serial.print("Temperatura Ambiente: ");
-		Serial.print(Tc);
-		Serial.println("ºC");
-		vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-		//Testar Tarefa
-		Serial.println(F("ADC: OK"));
-		vTaskDelayUntil( &xLastWakeTime, ( 150 / portTICK_PERIOD_MS ) ); //Tarefa ocorre durante 150ms
+	for (;;) {
+		Serial.print(pcTaskName);
+		analog_value = analogRead(ADC_1_4);
+		analog_voltage = analog_value * (VREF_PLUS - VREF_MINUS)
+				/ (pow(2.0, (float) ADC_RESOLUTION)) + VREF_MINUS;
+		temp_LM35 = ((analog_voltage * 100));
+#ifdef DEBUG_PRINT_ALL
+			Serial.print("ADC_1_4: ");
+			Serial.println(analog_value);
+			Serial.print("ADC_1_4 VOLT: ");
+			Serial.println(analog_voltage);
+			Serial.print("LM35 DEG: ");
+			Serial.println(temp_LM35);
+#endif
+#ifdef DEBUG_PRINT_ALL
+		Serial.println(F("ADC's: OK"));
+#endif
+		xQueueSendToBack(xQueueADC, &temp_LM35, 0); //Enviar valor temp para a Brain
+		vTaskDelayUntil(&xLastWakeTime, (150 / portTICK_PERIOD_MS)); //Tarefa ocorre durante 150ms
 	}
 }                                              //Fim da Tarefa ADC
 
-
-
-
-
-
-// The loop function is called in an endless loop
-void loop()
-{
+void loop() {
 	vTaskDelete( NULL);
 }
 
